@@ -34,13 +34,6 @@ graph(%p0 : Tensor, %p1 : Tensor):
   return (%1)
 """
 
-graph_str = """\
-graph(%p0 : Tensor, %p1 : Tensor):
-  %0 : float = prim::Constant[value=0.123]()
-  %1 : Tensor = prim::NumToTensor(%0)
-  return (%1)
-"""
-
 graph = torch._C.parse_ir(graph_str)
 _print_title('TorchScript Graph')
 print(graph)
