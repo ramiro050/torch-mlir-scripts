@@ -8,63 +8,57 @@ then, simply call `python torchscript_to_linalg.py`.
 """
 
 import torch
+import torchvision.models as models
 import torch_mlir
+import warnings
 from torch_mlir_e2e_test.linalg_on_tensors_backends.refbackend \
     import RefBackendLinalgOnTensorsBackend
-from torch_mlir.passmanager import PassManager
-from torch_mlir.dialects.torch.importer.jit_ir import ClassAnnotator, ModuleBuilder
+from torch_mlir_e2e_test.tosa_backends.linalg_on_tensors import LinalgOnTensorsTosaBackend
 
 def _print_title(title: str):
     print()
     print(title)
     print('-' * len(title))
 
+example_inputs = [torch.rand((3,4,5,6)), torch.randint(0, 1, (4,2)), torch.tensor([0, 1])]
+placeholder_inputs = [torch_mlir.TensorPlaceholder.like(x, dynamic_axes=[]) for x in example_inputs]
+
 class MyModule(torch.nn.Module):
     def __init__(self):
         super().__init__()
 
-    def forward(self, x):
-        return torch.tanh(x)
-
+    def forward(self, a, b, c):
+        return torch.ops.aten.index(a, [b, None, c])
 
 
 module = MyModule()
-script_module = torch.jit.script(module)
+script_module = torch.jit.script(module, example_inputs)
 _print_title("TorchScript")
 print(script_module.graph)
 
-mb = ModuleBuilder()
-class_annotator = ClassAnnotator()
-class_annotator.exportNone(script_module._c._type())
-class_annotator.exportPath(script_module._c._type(), ["forward"])
-class_annotator.annotateArgs(script_module._c._type(),
-                             ["forward"],
-                             [None, ([-1], torch.float, True)])
-mb.import_module(script_module._c, class_annotator)
-mlir_module = mb.module
-
+torch_module = torch_mlir.compile(script_module, placeholder_inputs,
+                                  output_type=torch_mlir.OutputType.RAW)
 _print_title("Torch-MLIR")
-print(mlir_module)
+print(torch_module)
 
-# Compile the torch MLIR and execute the compiled program
-with mlir_module.context:
-    pm = PassManager.parse('torchscript-module-to-torch-backend-pipeline')
-    pm.run(mlir_module)
-    _print_title("TORCH-MLIR-backend")
-    print(mlir_module)
-    pm = PassManager.parse('torch-backend-to-linalg-on-tensors-backend-pipeline')
-    pm.run(mlir_module)
+torch_module = torch_mlir.compile(script_module, placeholder_inputs,
+                                  output_type=torch_mlir.OutputType.TORCH)
+_print_title("Torch-MLIR-backend")
+print(torch_module)
+
+linalg_module = torch_mlir.compile(script_module, placeholder_inputs,
+                                   output_type=torch_mlir.OutputType.LINALG_ON_TENSORS)
 
 _print_title("Linalg-MLIR")
-print(mlir_module)
+print(linalg_module)
 
 backend = RefBackendLinalgOnTensorsBackend()
-compiled = backend.compile(mlir_module)
+compiled = backend.compile(linalg_module)
 jit_module = backend.load(compiled)
 
 _print_title("Running Compiled Graph")
-x = torch.rand(5)
 print('Expected output:')
-print(script_module.forward(x))
+print(script_module.forward(*example_inputs))
 print('Output from compiled MLIR:')
-print(jit_module.forward(x.numpy()))
+numpy_inputs = list(map(lambda x: x.numpy(), example_inputs))
+print(torch.tensor(jit_module.forward(*numpy_inputs)))
